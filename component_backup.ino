@@ -1,10 +1,10 @@
-Todos Componentes unidos — (AJUSTANDO VALORES CONVERSION)
 #include <SPI.h>
-#include <Ethernet.h>
+#include <UIPEthernet.h>  
 #include <TFT_eSPI.h>
 #include "BluetoothSerial.h"
 #include <driver/adc.h>   // Para atenuación ADC en ESP32
 #include <time.h>   // ⬅️ Para NTP
+#include <ArduinoJson.h>
 
 // ================== RED ETHERNET ==================
 #define PIN_MISO 17
@@ -21,6 +21,8 @@ const int serverPort = 3009;
 EthernetClient client;
 String jwtToken = "";
 const char* productId = "67d262aacf18fdaf14ec2e75";
+const char* controllerId = "68ba69fe76b0079735dbe918";
+
 String deviceIP = "0.0.0.0";
 
 // ================== CONFIGURACIÓN NTP ==================
@@ -33,16 +35,57 @@ BluetoothSerial SerialBT;
 TFT_eSPI tft = TFT_eSPI();
 
 const int TDS_PIN = 32;
-float calibrationFactor = 0.50f;
-float voltageOffset     = 0.20f;
-const int NUM_SAMPLES   = 20;
-
+const int NUM_SAMPLES = 50;   // Número de muestras para promediar
+const float ALPHA = 0.1f;     // Filtro exponencial (0-1)
+float calibrationFactor = 1.58f; // Ajuste TDS
+float tdsFiltered = 0.0f;
+float lastVoltage = 0.0f;
 
 int tdsRaw = 0;
 int tdsValue = 0;
-float lastVoltage = 0.0f;
+
+// Función para leer y promediar N muestras del ADC
+float readAverageVoltage() {
+  long sum = 0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    sum += analogRead(TDS_PIN);
+    delay(2);
+  }
+  float adcAverage = sum / (float)NUM_SAMPLES;
+  return adcAverage * 3.3 / 4095.0; // Convertir a voltaje
+}
+
+void leerTDS() {
+  float voltage = readAverageVoltage();  
+  lastVoltage = voltage;
+
+  // Umbral mínimo de voltaje para protección
+  const float V_MIN = 0.05;   // Voltios, ajustable según tu sensor
+  float tds_ppm;
+
+  if (voltage < V_MIN) {
+    // Voltaje muy bajo: establecer TDS mínimo o aplicar factor de compensación
+    tds_ppm = 35.0 + (voltage / V_MIN) * (calibrationFactor * voltage * 100.0); 
+    // Esto asegura que nunca baje de ~35 ppm
+  } else {
+    tds_ppm = voltage * calibrationFactor;
+  }
+
+  // Filtro exponencial
+  tdsFiltered = tdsFiltered * (1 - ALPHA) + tds_ppm * ALPHA;
+
+  tdsRaw = (int)tds_ppm;
+  tdsValue = (int)tdsFiltered;
+
+  Serial.printf("[BT] RAW=%d | Volt=%.3f V | TDScrudo=%d ppm | TDSajust=%d ppm\n",
+                tdsRaw, voltage, tdsRaw, tdsValue);
+  SerialBT.printf("[BT] RAW=%d | Volt=%.3f V | TDScrudo=%d ppm | TDSajust=%d ppm\n",
+                tdsRaw, voltage, tdsRaw, tdsValue);
+}
+
 
 // ================== FLUJOS ==================
+float kFactor = 55.0f;  // valor por defecto calibrado
 const int FLOW_PIN_PROD = 15;
 const int FLOW_PIN_RECH = 4;
 volatile int flowPulseProd = 0;
@@ -57,39 +100,70 @@ unsigned long lastFlowCalc = 0;
 const int RELAY_PIN = 19;
 const int CONTROL_PIN_1 = 27;
 const int CONTROL_PIN_2 = 25;
-bool relayState = false;
+bool relayState = true;
 
 // ====== INTERRUPTS ======
 void IRAM_ATTR countProd() { flowPulseProd++; }
 void IRAM_ATTR countRech() { flowPulseRech++; }
 
 // ================== FUNCIONES ==================
-int readADC_Average(int pin, int samples) {
-  long acc = 0;
-  for (int i = 0; i < samples; i++) {
-    acc += analogRead(pin);
-    delayMicroseconds(500);
+
+String getControllerById() {
+  if (jwtToken == "") {
+    obtenerToken();
+    delay(500);
+    if (jwtToken == "") {
+      Serial.println("[ERROR] No se pudo obtener token para GET controller");
+      SerialBT.println("[ERROR] No se pudo obtener token para GET controller");
+      return "";
+    }
   }
-  return (int)(acc / samples);
-}
 
-void leerTDS() {
-  int raw = readADC_Average(TDS_PIN, NUM_SAMPLES);
+  EthernetClient localClient;
+  if (!localClient.connect(serverIp, serverPort)) {
+    Serial.println("[ERROR] No se pudo conectar al servidor para GET controller");
+    SerialBT.println("[ERROR] No se pudo conectar al servidor para GET controller");
+    return "";
+  }
 
-  float voltage = (raw / 4095.0f) * 3.3f;
-  lastVoltage = voltage;
+  String request = "";
+  request += "GET /api/v1.0/controllers/" + String(controllerId) + " HTTP/1.1\r\n";
+  request += "Host: 164.92.95.176\r\n";
+  request += "Authorization: Bearer " + jwtToken + "\r\n";
+  request += "Connection: close\r\n\r\n";
 
-  float vCal = voltage - voltageOffset;
-  if (vCal < 0) vCal = 0;
+  localClient.print(request);
 
-  float tds_ppm_raw = (133.42f * powf(vCal, 3)
-                     - 255.86f * powf(vCal, 2)
-                     + 857.39f * vCal);
+  String response = "";
+  unsigned long timeout = millis();
+  while (localClient.connected() && millis() - timeout < 5000) {
+    while (localClient.available()) response += (char)localClient.read();
+  }
+  localClient.stop();
 
-  float tds_ppm_cal = tds_ppm_raw * calibrationFactor;
+  int jsonStart = response.indexOf("{");
+  if (jsonStart == -1) return "";
+  String json = response.substring(jsonStart);
 
-  tdsRaw = (int)tds_ppm_raw;
-  tdsValue = (int)tds_ppm_cal;
+  StaticJsonDocument<1024> doc;
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) {
+    Serial.println("[ERROR] No se pudo parsear JSON del controlador");
+    SerialBT.println("[ERROR] No se pudo parsear JSON del controlador");
+    return json;
+  }
+
+  if (doc.containsKey("kfactor_flujo")) {
+    float newK = doc["kfactor_flujo"].as<float>();
+    if (newK > 0) kFactor = newK;
+  }
+
+  if (doc.containsKey("kfactor_tds")) {
+    float newTDS = doc["kfactor_tds"].as<float>();
+    if (newTDS > 0) calibrationFactor = newTDS;
+  }
+
+  return json;
 }
 
 void setupPins() {
@@ -107,16 +181,13 @@ void setupPins() {
   relayState = false;
 }
 
-// ====== CALCULAR FLUJOS ======
 void calcularFlujo() {
   unsigned long now = millis();
-  if (now - lastFlowCalc >= 1000) {
-    float kFactor = 32.0625; // Ajuste sensor
-
-    flowRateProd = (flowPulseProd / kFactor) * 60.0;
-    flowRateRech = (flowPulseRech / kFactor) * 60.0;
-
-    volumenProd += flowRateProd / 60.0; // litros acumulados
+  if (now - lastFlowCalc >= 1000) {    
+    flowRateProd = flowPulseProd / kFactor; // L/min
+    flowRateRech = flowPulseRech / kFactor; // L/min
+    
+    volumenProd += flowRateProd / 60.0;
     volumenRech += flowRateRech / 60.0;
 
     flowPulseProd = 0;
@@ -125,17 +196,16 @@ void calcularFlujo() {
   }
 }
 
-// ====== RELAY ======
 void updateRelay() {
   bool state27 = digitalRead(CONTROL_PIN_1);
   bool state25 = digitalRead(CONTROL_PIN_2);
 
-  if (!state27 && !state25) { // Ambos presionados, apagar
+  if (!state27 && !state25) {
     if (relayState) {
       relayState = false;
       digitalWrite(RELAY_PIN, HIGH);
     }
-  } else { // uno o ambos sueltos, encender
+  } else {
     if (!relayState) {
       relayState = true;
       digitalWrite(RELAY_PIN, LOW);
@@ -143,7 +213,6 @@ void updateRelay() {
   }
 }
 
-// ====== DISPLAY ======
 void drawTableLayout() {
   tft.fillScreen(TFT_WHITE);
   tft.setTextSize(2);
@@ -151,55 +220,44 @@ void drawTableLayout() {
 
   int rows = 6;
   int rowH = tft.height() / rows;
-
-  // Marco principal
   tft.drawRect(0, 0, tft.width(), tft.height(), TFT_BLACK);
 
-  // Líneas horizontales
   for (int i = 1; i < rows; i++) {
     tft.drawLine(0, i * rowH, tft.width(), i * rowH, TFT_BLACK);
   }
 
-  // Línea vertical etiqueta/valor (📌 un poco más a la izquierda)
   int colX = tft.width() * 0.50;  
   tft.drawLine(colX, 0, colX, tft.height(), TFT_BLACK);
 
-  // Etiquetas
-  tft.setCursor(5, rowH/2 - 8);        tft.print("TDS Crudo");
-  tft.setCursor(5, rowH + rowH/2 - 8); tft.print("TDS Ajustado");
+  tft.setCursor(5, rowH/2 - 8);        tft.print("Ajuste TDS");
+  tft.setCursor(5, rowH + rowH/2 - 8); tft.print("TDS");
   tft.setCursor(5, 2*rowH + rowH/2 - 8); tft.print("V. Produccion");
   tft.setCursor(5, 3*rowH + rowH/2 - 8); tft.print("V. Rechazo");
   tft.setCursor(5, 4*rowH + rowH/2 - 8); tft.print("Bomba");
   tft.setCursor(5, 5*rowH + rowH/2 - 8); tft.print("Red");
 }
 
-
 void updateTable() {
   int rows = 6;
   int rowH = tft.height() / rows;
   int colX = tft.width() * 0.50 + 2;
 
-  // TDS Crudo
   tft.setTextColor(TFT_BLUE, TFT_WHITE);
   tft.setCursor(colX, rowH/2 - 10); 
-  tft.printf("%5d ppm   ", tdsRaw);
+  tft.printf("%.2f   ", calibrationFactor);
 
-  // TDS Ajustado
   tft.setTextColor(TFT_ORANGE, TFT_WHITE);
   tft.setCursor(colX, rowH + rowH/2 - 10); 
   tft.printf("%5d ppm   ", tdsValue);
 
-  // Volumen Producción
   tft.setTextColor(TFT_DARKGREEN, TFT_WHITE);
   tft.setCursor(colX, 2*rowH + rowH/2 - 10); 
   tft.printf("%8.2f L/m", flowRateProd);
 
-  // Volumen Rechazo
   tft.setTextColor(TFT_RED, TFT_WHITE);
   tft.setCursor(colX, 3*rowH + rowH/2 - 10); 
   tft.printf("%8.2f L/m", flowRateRech);
 
-  // Estado Bomba
   tft.setCursor(colX, 4*rowH + rowH/2 - 10);
   if (relayState) {
     tft.setTextColor(TFT_RED, TFT_WHITE);
@@ -209,7 +267,6 @@ void updateTable() {
     tft.print("ON ");
   }
 
-  // Estado Red (mostrar IP si existe)
   tft.setCursor(colX, 5*rowH + rowH/2 - 10);
   if (deviceIP != "") {
     tft.setTextColor(TFT_MAGENTA, TFT_WHITE);
@@ -220,10 +277,6 @@ void updateTable() {
   }
 }
 
-
-
-
-// ====== ETHERNET ======
 void obtenerToken() {
   if (!client.connect(serverIp, serverPort)) return;
 
@@ -253,34 +306,23 @@ void obtenerToken() {
 }
 
 void enviarDatos(const char* productId, float flujoProd, float flujoRech, float tds, float temperature) {
-  // Asegurarse de que tenemos token
   if (jwtToken == "") {
     obtenerToken();
-    delay(500); // esperar un poco por la respuesta
-    if (jwtToken == "") {
-      Serial.println("[ERROR] No se pudo obtener token, se omite envío de datos.");
-      return;
-    }
+    delay(500);
+    if (jwtToken == "") return;
   }
 
-  // Obtener timestamps (epoch en ms)
   time_t ahora = time(nullptr);
   long tiempo_inicio = (long)ahora * 1000;
-  long tiempo_fin    = (long)(ahora + 1) * 1000; // simula 1s después
+  long tiempo_fin    = (long)(ahora + 1) * 1000;
 
-  // Leer sensores
   leerTDS();
   calcularFlujo();
   updateRelay();
 
-  // Crear cliente local para evitar conflictos
   EthernetClient localClient;
-  if (!localClient.connect(serverIp, serverPort)) {
-    Serial.println("[ERROR] No se pudo conectar al servidor en enviarDatos()");
-    return;
-  }
+  if (!localClient.connect(serverIp, serverPort)) return;
 
-  // Construir JSON
   String json = "{";
   json += "\"producto\":\"" + String(productId) + "\",";
   json += "\"real_data\":{";
@@ -298,7 +340,6 @@ void enviarDatos(const char* productId, float flujoProd, float flujoRech, float 
   json += "}";
   json += "}";
 
-  // Construcción del request
   String request = "";
   request += "POST /api/v1.0/products/componentInput HTTP/1.1\r\n";
   request += "Host: 164.92.95.176\r\n";
@@ -308,14 +349,12 @@ void enviarDatos(const char* productId, float flujoProd, float flujoRech, float 
   request += "Connection: close\r\n\r\n";
   request += json;
 
-  // Log del request
   Serial.println("========== REQUEST ==========");
   Serial.println(request);
-  Serial.println("========== END REQUEST ==========");
+  SerialBT.println(request);
 
   localClient.print(request);
 
-  // Leer respuesta
   String response = "";
   unsigned long timeout = millis();
   while (localClient.connected() && millis() - timeout < 5000) {
@@ -323,15 +362,8 @@ void enviarDatos(const char* productId, float flujoProd, float flujoRech, float 
   }
   localClient.stop();
 
-  // Log del response
-  Serial.println("========== RESPONSE ==========");
-  Serial.println(response);
-  Serial.println("========== END RESPONSE ==========");
-
-  // Verificar token
   if (response.indexOf("invalid") != -1 || response.indexOf("expired") != -1) {
     jwtToken = "";
-    Serial.println("[WARN] Token inválido o expirado. Se solicitará uno nuevo.");
   }
 }
 
@@ -345,19 +377,27 @@ void setup() {
   tft.init();
   tft.setRotation(1);
   tft.setSwapBytes(true);
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
 
-  // Forzar orientación
-  tft.writecommand(0x36);
-  tft.writedata(0x28);
+  // 🔹 Forzar orientación y colores correctos
+  tft.writecommand(0x36);  // MADCTL
+  tft.writedata(0x28);     // Invierte RGB/BGR y orientación según tu pantalla
 
-  drawTableLayout();
+  tft.fillScreen(TFT_WHITE);
+  tft.setCursor(10, tft.height()/2 - 10);
+  tft.print("Iniciando componente...");
+  delay(1000);
 
-  // ADC calibración
+  tft.fillScreen(TFT_WHITE);
+  tft.setCursor(10, tft.height()/2 - 10);
+  tft.print("Obteniendo IP ...");
+
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
   analogSetPinAttenuation(TDS_PIN, ADC_11db);
 
-  // Ethernet
   pinMode(PIN_RST, OUTPUT);
   digitalWrite(PIN_RST, LOW);
   delay(200);
@@ -369,24 +409,31 @@ void setup() {
   Ethernet.init(PIN_CS);
 
   if (Ethernet.begin(mac) == 0) {
-    Serial.println("Error DHCP");
+    tft.fillScreen(TFT_WHITE);
+    tft.setCursor(10, tft.height()/2 - 10);
+    tft.setTextColor(TFT_RED, TFT_WHITE);
+    tft.print("Error DHCP");
     while (true);
   }
+
   delay(1000);
   IPAddress ip = Ethernet.localIP();
-  deviceIP = ip.toString();   // ✅ guardamos en variable global
-  Serial.print("IP asignada: ");
-  Serial.println(deviceIP);
-  // Configuración de NTP con zona horaria Hermosillo
+  deviceIP = ip.toString();
+
+  tft.fillScreen(TFT_WHITE);
+  tft.setCursor(10, tft.height()/2 - 10);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+  tft.printf("IP obtenida: %s", deviceIP.c_str());
+
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  Serial.println("⏳ Sincronizando hora NTP...");
   struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    Serial.print("✅ Hora local: ");
-    Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
-  } else {
-    Serial.println("❌ Error al obtener hora NTP");
-  }
+  getLocalTime(&timeinfo);
+
+  String controllerData = getControllerById();
+
+  drawTableLayout();
+  updateTable();
+
   obtenerToken();
 }
 
@@ -397,17 +444,14 @@ void loop() {
   updateRelay();
   updateTable();
 
-  Serial.printf("TDS: %d | TDScal: %d | Prod: %.2f | Rech: %.2f | Relay: %d\n",
-                tdsRaw, tdsValue, flowRateProd, flowRateRech, relayState);
-  SerialBT.printf("TDS: %d | TDScal: %d | Prod: %.2f | Rech: %.2f | Relay: %d\n",
-                  tdsRaw, tdsValue, flowRateProd, flowRateRech, relayState);
-
   if (jwtToken == "") {
     obtenerToken();
     delay(5000);
   }
 
   enviarDatos(productId, flowRateProd, flowRateRech, tdsValue, 25.6);
+  SerialBT.printf("[BT] Prod: %.2f L/min | Rech: %.2f L/min | Vprod: %.3f L | Vrech: %.3f L | Relay: %d\n",
+                  flowRateProd, flowRateRech, volumenProd, volumenRech, relayState);
 
   delay(1000);
 }
