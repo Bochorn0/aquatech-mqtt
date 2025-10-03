@@ -53,7 +53,7 @@ EthernetClient client;
 const int TDS_PIN = 32;
 const int FLOW_PIN_PROD = 15;
 const int FLOW_PIN_RECH = 4;
-const int RELAY_PIN = 19;
+const int RELAY_PIN = 16;
 const int CONTROL_PIN_1 = 27;
 const int CONTROL_PIN_2 = 25;
 
