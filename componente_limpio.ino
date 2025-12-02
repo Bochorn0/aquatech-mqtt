@@ -1093,7 +1093,7 @@ void enviarDatos(const char* productIdParam, float flujoProd, float flujoRech, f
     }
 
     String request = "";
-    request += "POST /api/v1.0/data HTTP/1.1\r\n";
+    request += "POST /api/v1.0/products/componentInput HTTP/1.1\r\n";
     request += "Host: 164.92.95.176\r\n";
     request += "Content-Type: application/json\r\n";
     request += "Authorization: Bearer " + jwtToken + "\r\n";
