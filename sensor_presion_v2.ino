@@ -22,7 +22,7 @@ unsigned long lastSyncTime = 0;
 
 // Control de logs y mock data
 #define ENABLE_SERIAL_LOGS false  // Cambiar a true para debug
-#define USE_MOCK_DATA true        // Cambiar a false para usar sensores reales
+#define USE_MOCK_DATA false// Cambiar a false para usar sensores reales
 
 // Modo de desarrollo - controla el envío de datos
 bool devMode = true;  // true = envía datos al servidor, false = solo lectura local
@@ -42,6 +42,22 @@ const float MIN_PSI = 1.0;                     // Presión mínima válida
 const float MAX_PSI = 120.0;                   // Presión máxima válida (aumentado para tolerar picos)
 const float MIN_VOLTAGE = 0.05;                // Voltaje mínimo para detectar sensor conectado
 const float MAX_VOLTAGE = 3.35;                // Voltaje máximo esperado (con tolerancia sobre 3.3V)
+
+// ================== CALIBRACIÓN DE SENSORES ==================
+// Estos parámetros se actualizan automáticamente desde el servidor
+// 
+// tipo_sensor: Define el tipo de sensor de presión conectado (aplica a ambos sensores)
+//   - Tipo 1: Sensor estándar
+//             Fórmula: PSI = (raw * sensor_factor) - 7.8
+//   - Tipo 2: Sensor alternativo (ajustar offset según especificaciones del fabricante)
+//             Fórmula: PSI = (raw * sensor_factor) - 10.0
+//
+// sensor_factor: Factor de conversión ADC -> PSI
+//   - Valor típico: 0.02933 para sensores 0-120 PSI
+//   - Cálculo: (Rango_PSI) / (Resolución_ADC) = 120 / 4095 ≈ 0.02933
+//   - Este valor se obtiene desde el servidor según el modelo de sensor instalado
+int tipo_sensor = 1;                           // Tipo de sensor: 1 o 2
+float sensor_factor = 0.02933;                 // Factor de conversión (aplica a ambos sensores)
 
 // ================== SYSTEM STATE ==================
 // Entrada (Pin 35)
@@ -147,12 +163,6 @@ void readPressureSensors() {
     pressure1_psi = 40.0 + (random(0, 100) / 10.0);  // 40.0 - 50.0 psi
     pressure2_psi = 35.0 + (random(0, 100) / 10.0);  // 35.0 - 45.0 psi
     
-    raw1 = (pressure1_psi - SENSOR1_OFFSET) / SENSOR1_FACTOR;
-    voltage1 = raw1 * (3.3 / 4095.0);
-    
-    raw2 = (pressure2_psi - SENSOR2_OFFSET) / SENSOR2_FACTOR;
-    voltage2 = raw2 * (3.3 / 4095.0);
-    
     // Mock data siempre está "conectado" y "válido"
     connected1 = true;
     valid1 = true;
@@ -163,9 +173,21 @@ void readPressureSensors() {
     PRESSURE_DIFFERENCE = abs(pressure1_psi - pressure2_psi);
     
   #else
+    // Leer sensor 1 (ENTRADA)
     raw1 = readAvgRaw(PRESSURE_PIN_1, N_SAMPLES);
     voltage1 = raw1 * (3.3 / 4095.0);
-    pressure1_psi = (raw1 * SENSOR1_FACTOR) + SENSOR1_OFFSET;
+    
+    // Calcular presión según tipo_sensor
+    if (tipo_sensor == 1) {
+      // Sensor tipo 1: fórmula estándar
+      pressure1_psi = (raw1 * sensor_factor) - 7.8;
+    } else if (tipo_sensor == 2) {
+      // Sensor tipo 2: fórmula alternativa (ajustar según necesites)
+      pressure1_psi = (raw1 * sensor_factor) - 10.0;
+    } else {
+      // Fallback: usar fórmula tipo 1
+      pressure1_psi = (raw1 * sensor_factor) - 7.8;
+    }
     
     connected1 = (voltage1 >= MIN_VOLTAGE);
     
@@ -176,9 +198,21 @@ void readPressureSensors() {
       pressure1_psi = 0.0;
     }
     
+    // Leer sensor 2 (SALIDA)
     raw2 = readAvgRaw(PRESSURE_PIN_2, N_SAMPLES);
     voltage2 = raw2 * (3.3 / 4095.0);
-    pressure2_psi = (raw2 * SENSOR2_FACTOR) + SENSOR2_OFFSET;
+    
+    // Calcular presión según tipo_sensor (mismo tipo para ambos sensores)
+    if (tipo_sensor == 1) {
+      // Sensor tipo 1: fórmula estándar
+      pressure2_psi = (raw2 * sensor_factor) - 7.8;
+    } else if (tipo_sensor == 2) {
+      // Sensor tipo 2: fórmula alternativa (ajustar según necesites)
+      pressure2_psi = (raw2 * sensor_factor) - 10.0;
+    } else {
+      // Fallback: usar fórmula tipo 1
+      pressure2_psi = (raw2 * sensor_factor) - 7.8;
+    }
     
     connected2 = (voltage2 >= MIN_VOLTAGE);
     
@@ -189,6 +223,7 @@ void readPressureSensors() {
       pressure2_psi = 0.0;
     }
     
+    // Calcular diferencia de presión
     if (connected1 && connected2 && valid1 && valid2) {
       PRESSURE_DIFFERENCE = abs(pressure1_psi - pressure2_psi);
     } else {
@@ -358,6 +393,8 @@ String getControllerById() {
   if (doc.containsKey("update_controller_time")) Serial.println("  - update_controller_time");
   if (doc.containsKey("reset_pending")) Serial.println("  - reset_pending");
   if (doc.containsKey("flush_time")) Serial.println("  - flush_time");
+  if (doc.containsKey("tipo_sensor")) Serial.println("  - tipo_sensor ✓");
+  if (doc.containsKey("sensor_factor")) Serial.println("  - sensor_factor ✓");
 
   if (doc.containsKey("update_controller_time")) {
     unsigned long newUpdateTime = doc["update_controller_time"].as<unsigned long>();
@@ -417,46 +454,33 @@ String getControllerById() {
     unsigned long newFlushTime = doc["flush_time"].as<unsigned long>();
     if (newFlushTime != flush_time) {
       flush_time = newFlushTime;
+      Serial.printf("[CONFIG] flush_time actualizado: %lu ms\n", flush_time);
     }
   }
 
-  if (doc.containsKey("sensor1_factor")) {
-    float newFactor = doc["sensor1_factor"].as<float>();
-    if (newFactor > 0 && newFactor != SENSOR1_FACTOR) {
-      SENSOR1_FACTOR = newFactor;
-      Serial.printf("[CONFIG] sensor1_factor actualizado: %.6f\n", SENSOR1_FACTOR);
-    }
-  }
-
-  if (doc.containsKey("sensor1_offset")) {
-    float newOffset = doc["sensor1_offset"].as<float>();
-    if (newOffset != SENSOR1_OFFSET) {
-      SENSOR1_OFFSET = newOffset;
-      Serial.printf("[CONFIG] sensor1_offset actualizado: %.2f\n", SENSOR1_OFFSET);
-    }
-  }
-
-  if (doc.containsKey("sensor2_factor")) {
-    float newFactor = doc["sensor2_factor"].as<float>();
-    if (newFactor > 0 && newFactor != SENSOR2_FACTOR) {
-      SENSOR2_FACTOR = newFactor;
-      Serial.printf("[CONFIG] sensor2_factor actualizado: %.6f\n", SENSOR2_FACTOR);
-    }
-  }
-
-  if (doc.containsKey("sensor2_offset")) {
-    float newOffset = doc["sensor2_offset"].as<float>();
-    if (newOffset != SENSOR2_OFFSET) {
-      SENSOR2_OFFSET = newOffset;
-      Serial.printf("[CONFIG] sensor2_offset actualizado: %.2f\n", SENSOR2_OFFSET);
-    }
-  }
-
-  if (doc.containsKey("tipoSensor")) {
-    int newTipoSensor = doc["tipoSensor"].as<int>();
+  // Actualizar tipo_sensor (1 o 2)
+  if (doc.containsKey("tipo_sensor")) {
+    int newTipoSensor = doc["tipo_sensor"].as<int>();
     if (newTipoSensor == 1 || newTipoSensor == 2) {
-      tipoSensor = newTipoSensor;
-      Serial.printf("[CONFIG] tipoSensor actualizado: %d\n", tipoSensor);
+      if (newTipoSensor != tipo_sensor) {
+        tipo_sensor = newTipoSensor;
+        Serial.printf("[CONFIG] ✓ tipo_sensor actualizado: %d\n", tipo_sensor);
+      }
+    } else {
+      Serial.printf("[CONFIG] ⚠ tipo_sensor inválido recibido: %d (debe ser 1 o 2)\n", newTipoSensor);
+    }
+  }
+  
+  // Actualizar sensor_factor (factor de conversión global)
+  if (doc.containsKey("sensor_factor")) {
+    float newSensorFactor = doc["sensor_factor"].as<float>();
+    if (newSensorFactor > 0) {
+      if (newSensorFactor != sensor_factor) {
+        sensor_factor = newSensorFactor;
+        Serial.printf("[CONFIG] ✓ sensor_factor actualizado: %.6f\n", sensor_factor);
+      }
+    } else {
+      Serial.printf("[CONFIG] ⚠ sensor_factor inválido recibido: %.6f (debe ser > 0)\n", newSensorFactor);
     }
   }
 
@@ -1136,6 +1160,8 @@ void setup() {
   
   Serial.printf("Frecuencia de lectura: %lu segundos\n", loopTime / 1000);
   Serial.printf("Envio de datos: %s\n", devMode ? "ACTIVADO" : "DESACTIVADO");
+  Serial.printf("Tipo de sensor: %d\n", tipo_sensor);
+  Serial.printf("Factor de conversion: %.6f\n", sensor_factor);
   
   // Configurar pines
   pinMode(PRESSURE_PIN_1, INPUT);
