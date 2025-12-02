@@ -58,6 +58,7 @@ const float MAX_VOLTAGE = 3.35;                // Voltaje máximo esperado (con 
 //   - Este valor se obtiene desde el servidor según el modelo de sensor instalado
 int tipo_sensor = 1;                           // Tipo de sensor: 1 o 2
 float sensor_factor = 0.02933;                 // Factor de conversión (aplica a ambos sensores)
+float global_calibration_offset = 6.0;         // Offset global de calibración para ambos sensores (ajustar según pruebas)
 
 // ================== SYSTEM STATE ==================
 // Entrada (Pin 35)
@@ -94,7 +95,7 @@ const char* controllerId = "692c9f9caed050879fb8426c";
 
 // URLs para HTTPClient (WiFi)
 const char* loginUrl = "http://164.92.95.176:3009/api/v1.0/auth/login";
-const char* controllerUrl = "http://164.92.95.176:3009/api/v1.0/controllers/690b81f46e38ab373c4818c3";
+const char* controllerUrl = "http://164.92.95.176:3009/api/v1.0/controllers/692c9f9caed050879fb8426c";
 const char* dataUrl = "http://164.92.95.176:3009/api/v1.0/products/componentInput";
 
 // ================== PUMP ANIMATION ==================
@@ -156,6 +157,25 @@ float readAvgRaw(int pin, int samples) {
   return (float)sum / samples;
 }
 
+// Función única de conversión para ambos sensores (misma fórmula)
+float calculatePressureFromRaw(int raw) {
+  float pressure = 0.0;
+  
+  if (tipo_sensor == 1) {
+    // Sensor tipo 1: fórmula estándar
+    pressure = (raw * sensor_factor) - 7.8;
+  } else if (tipo_sensor == 2) {
+    // Sensor tipo 2: fórmula alternativa
+    pressure = (raw * sensor_factor) - 10.0;
+  } else {
+    // Fallback: usar fórmula tipo 1
+    pressure = (raw * sensor_factor) - 7.8;
+  }
+  
+  // Aplicar offset global de calibración (aplica a ambos sensores por igual)
+  return pressure + global_calibration_offset;
+}
+
 void readPressureSensors() {
   #if USE_MOCK_DATA
     // ===== DATOS MOCK PARA PRUEBAS =====
@@ -173,21 +193,10 @@ void readPressureSensors() {
     PRESSURE_DIFFERENCE = abs(pressure1_psi - pressure2_psi);
     
   #else
-    // Leer sensor 1 (ENTRADA)
+    // Leer sensor 1 (ENTRADA) - Usar misma fórmula de conversión que sensor 2
     raw1 = readAvgRaw(PRESSURE_PIN_1, N_SAMPLES);
     voltage1 = raw1 * (3.3 / 4095.0);
-    
-    // Calcular presión según tipo_sensor
-    if (tipo_sensor == 1) {
-      // Sensor tipo 1: fórmula estándar
-      pressure1_psi = (raw1 * sensor_factor) - 7.8;
-    } else if (tipo_sensor == 2) {
-      // Sensor tipo 2: fórmula alternativa (ajustar según necesites)
-      pressure1_psi = (raw1 * sensor_factor) - 10.0;
-    } else {
-      // Fallback: usar fórmula tipo 1
-      pressure1_psi = (raw1 * sensor_factor) - 7.8;
-    }
+    pressure1_psi = calculatePressureFromRaw(raw1);
     
     connected1 = (voltage1 >= MIN_VOLTAGE);
     
@@ -198,21 +207,10 @@ void readPressureSensors() {
       pressure1_psi = 0.0;
     }
     
-    // Leer sensor 2 (SALIDA)
+    // Leer sensor 2 (SALIDA) - Usar misma fórmula de conversión que sensor 1
     raw2 = readAvgRaw(PRESSURE_PIN_2, N_SAMPLES);
     voltage2 = raw2 * (3.3 / 4095.0);
-    
-    // Calcular presión según tipo_sensor (mismo tipo para ambos sensores)
-    if (tipo_sensor == 1) {
-      // Sensor tipo 1: fórmula estándar
-      pressure2_psi = (raw2 * sensor_factor) - 7.8;
-    } else if (tipo_sensor == 2) {
-      // Sensor tipo 2: fórmula alternativa (ajustar según necesites)
-      pressure2_psi = (raw2 * sensor_factor) - 10.0;
-    } else {
-      // Fallback: usar fórmula tipo 1
-      pressure2_psi = (raw2 * sensor_factor) - 7.8;
-    }
+    pressure2_psi = calculatePressureFromRaw(raw2);
     
     connected2 = (voltage2 >= MIN_VOLTAGE);
     
@@ -229,6 +227,11 @@ void readPressureSensors() {
     } else {
       PRESSURE_DIFFERENCE = 0.0;
     }
+    
+    // Log básico de presiones y voltajes
+    Serial.printf("[PRESION] Entrada: %d psi (%.2fV) | Salida: %d psi (%.2fV) | Diff: %d psi | Relay: %s\n",
+                  (int)pressure1_psi, voltage1, (int)pressure2_psi, voltage2, 
+                  (int)PRESSURE_DIFFERENCE, RELAY_STATE ? "ON" : "OFF");
   #endif
 }
 
@@ -268,11 +271,11 @@ void initializeNetwork() {
   drawStatusMessage("Iniciando AquaTech Controller...", TFT_BLUE);
   delay(1000);
   
-  drawStatusMessage("Intentando WiFi...", TFT_ORANGE);
+  drawStatusMessage("Intentando WiFi...       ", TFT_ORANGE);
   updateNetworkIconDuringConnection("WiFi");
   
   if (!tryConnectSavedWiFi(10000)) {
-    drawStatusMessage("Esperando BT...", TFT_RED);
+    drawStatusMessage("Esperando BT...     ", TFT_RED);
     updateNetworkIconDuringConnection("Bluetooth");
     deviceIP = "0.0.0.0";
     CURRENT_CONNECTION_STATE = false;
@@ -508,6 +511,8 @@ void enviarDatos(const char* productIdParam, float pressure1PSI, float pressure2
   jsonPayload += "{";
   jsonPayload += "\"productId\":\"" + String(productIdParam) + "\",";
   jsonPayload += "\"presion_in\":" + String(pressure1PSI, 2) + ",";
+  jsonPayload += "\"pressure_valve1_psi\":" + String(pressure1PSI, 2) + ",";
+  jsonPayload += "\"pressure_valve2_psi\":" + String(pressure2PSI, 2) + ",";
   jsonPayload += "\"presion_out\":" + String(pressure2PSI, 2) + ",";
   jsonPayload += "\"pressure_difference_psi\":" + String(pressureDiff, 2) + ",";
   jsonPayload += "\"relay_state\":" + String(RELAY_STATE ? "true" : "false") + ",";
@@ -626,41 +631,49 @@ void handleBluetoothWiFi() {
         return;
       }
       
+      // CLEAR_WIFI siempre funciona, incluso si hay WiFi conectado
       if (credenciales.equalsIgnoreCase("CLEAR_WIFI")) {
+        SerialBT.println("[BT] Desconectando WiFi y reiniciando...");
         WiFi.disconnect(true, true);
         delay(500);
         ESP.restart();
       }
       
-      int comaIndex = credenciales.indexOf(',');
-      if (comaIndex > 0) {
-        String ssid = credenciales.substring(0, comaIndex);
-        String password = credenciales.substring(comaIndex + 1);
-        
-        ssid.trim();
-        password.trim();
-        
-        WiFi.mode(WIFI_STA);
-        WiFi.persistent(true);
-        WiFi.begin(ssid.c_str(), password.c_str());
-        
-        unsigned long start = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - start < 5000) {
-          delay(100);
-        }
-        
-        if (WiFi.status() == WL_CONNECTED) {
-          deviceIP = WiFi.localIP().toString();
-          connectedWiFi = true;
-          CONNECTION_TYPE = "WiFi";
-          CURRENT_CONNECTION_STATE = true;
-          delay(300);
-          ESP.restart();
+      // Configuración de WiFi solo si no hay WiFi conectado
+      if (!connectedWiFi) {
+        int comaIndex = credenciales.indexOf(',');
+        if (comaIndex > 0) {
+          String ssid = credenciales.substring(0, comaIndex);
+          String password = credenciales.substring(comaIndex + 1);
+          
+          ssid.trim();
+          password.trim();
+          
+          WiFi.mode(WIFI_STA);
+          WiFi.persistent(true);
+          WiFi.begin(ssid.c_str(), password.c_str());
+          
+          unsigned long start = millis();
+          while (WiFi.status() != WL_CONNECTED && millis() - start < 5000) {
+            delay(100);
+          }
+          
+          if (WiFi.status() == WL_CONNECTED) {
+            deviceIP = WiFi.localIP().toString();
+            connectedWiFi = true;
+            CONNECTION_TYPE = "WiFi";
+            CURRENT_CONNECTION_STATE = true;
+            delay(300);
+            ESP.restart();
+          } else {
+            WiFi.persistent(false);
+          }
         } else {
-          WiFi.persistent(false);
+          SerialBT.println("[ERROR] Formato inválido. Usa: NOMBRE_RED,PASSWORD_RED");
         }
       } else {
-        SerialBT.println("[ERROR] Formato inválido. Usa: NOMBRE_RED,PASSWORD_RED");
+        // Si hay WiFi conectado y no es CLEAR_WIFI, informar al usuario
+        SerialBT.println("[BT] WiFi ya conectado. Usa CLEAR_WIFI para desconectar.");
       }
       credenciales = "";
     } else {
@@ -1019,10 +1032,13 @@ void drawCompleteDisplay() {
   // Dibujar valores actuales
   updateDisplayValues();
   
-  // Dibujar contador de tiempo
-  unsigned long now = millis();
-  unsigned long timeSinceLastUpdate = (now - lastUpdateController) / 1000;
-  unsigned long displayTime = timeSinceLastUpdate % (updateControllerTime / 1000);
+  // Dibujar contador de tiempo (0 si no hay conexión WiFi)
+  unsigned long displayTime = 0;
+  if (connectedWiFi && devMode) {
+    unsigned long now = millis();
+    unsigned long timeSinceLastUpdate = (now - lastUpdateController) / 1000;
+    displayTime = timeSinceLastUpdate % (updateControllerTime / 1000);
+  }
   drawTimeCounter(displayTime);
   lastSyncTime = displayTime;
   
@@ -1127,8 +1143,13 @@ void updateDisplayTimer() {
   unsigned long now = millis();
   
   if (now - lastTimerUpdate >= 1000) {
-    unsigned long timeSinceLastUpdate = (now - lastUpdateController) / 1000;
-    unsigned long displayTime = timeSinceLastUpdate % (updateControllerTime / 1000);
+    unsigned long displayTime = 0;
+    
+    // Solo mostrar tiempo si hay conexión WiFi y devMode activo
+    if (connectedWiFi && devMode) {
+      unsigned long timeSinceLastUpdate = (now - lastUpdateController) / 1000;
+      displayTime = timeSinceLastUpdate % (updateControllerTime / 1000);
+    }
     
     if (displayTime != lastSyncTime) {
       drawTimeCounter(displayTime);
@@ -1295,10 +1316,8 @@ void loop() {
     lastUpdateController = now;
   }
   
-  // ====== MANEJO DE BLUETOOTH (solo si no hay red) ======
-  if (!connectedWiFi) {
-    handleBluetoothWiFi();
-  }
+  // ====== MANEJO DE BLUETOOTH (siempre escuchar, especialmente para CLEAR_WIFI) ======
+  handleBluetoothWiFi();
   
   delay(100);
 }
