@@ -45,6 +45,7 @@ const int RELAY_PIN = 16;
 const int RELAY_FLUSH_PIN = 17;  // ✅ Relay para flush programado
 const int CONTROL_PIN_1 = 27;  // Válvula
 const int CONTROL_PIN_2 = 25;  // Tanque
+const int FLUSH_BUTTON_PIN = 12;  // ✅ Botón de flush manual (LOW = activo)
 
 // ================== SENSOR CONFIGURATION ==================
 float CALIBRATION_FACTOR_TDS = 1.58f;
@@ -291,8 +292,32 @@ void updateRelay() {
   bool state25 = digitalRead(CONTROL_PIN_2);  // Tanque
   bool previousRelayState = relayState;
   
-  // Verificar si relay de flush está activo
-  bool flushOverride = isFlushActive;
+  // ✅ Verificar botón de flush manual (pin 12 en LOW = activo)
+  bool flushButtonActive = (digitalRead(FLUSH_BUTTON_PIN) == LOW);
+  
+  // Verificar si relay de flush está activo (programado O manual)
+  bool flushOverride = isFlushActive || flushButtonActive;
+
+  // ✅ CONTROL DEL RELAY DE FLUSH (Pin 17)
+  // Activar relay de flush si hay flush programado O botón manual presionado
+  if (flushOverride) {
+    if (!RELAY_FLUSH_STATE) {
+      digitalWrite(RELAY_FLUSH_PIN, HIGH);  // ✅ HIGH = ON
+      RELAY_FLUSH_STATE = true;
+      if (flushButtonActive) {
+        logWithTimestamp("RELAY", "🔄 FLUSH MANUAL: Relay Flush (Pin 17) ON - Botón presionado");
+      }
+    }
+  } else {
+    // Solo desactivar si NO hay flush programado activo (el botón manual tiene prioridad)
+    if (RELAY_FLUSH_STATE && !isFlushActive) {
+      digitalWrite(RELAY_FLUSH_PIN, LOW);   // ✅ LOW = OFF
+      RELAY_FLUSH_STATE = false;
+      if (!flushButtonActive) {
+        logWithTimestamp("RELAY", "🔄 FLUSH MANUAL: Relay Flush (Pin 17) OFF - Botón liberado");
+      }
+    }
+  }
 
   // ✅ LÓGICA CORREGIDA: 
   // Válvulas conectadas a GND (LOW) = ACTIVAS → Relay ON
@@ -305,7 +330,11 @@ void updateRelay() {
       digitalWrite(RELAY_PIN, HIGH);  // ✅ HIGH = ON
       
       if (flushOverride) {
-        logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - FORZADO por FLUSH ACTIVO");
+        if (flushButtonActive) {
+          logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - FORZADO por FLUSH MANUAL (Botón Pin 12)");
+        } else {
+          logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - FORZADO por FLUSH PROGRAMADO");
+        }
       } else {
         logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - Ambas válvulas activas (27=%d, 25=%d)",
                          state27, state25);
@@ -1983,6 +2012,7 @@ void setup() {
   pinMode(RELAY_FLUSH_PIN, OUTPUT);  // ✅ Pin para relay de flush
   pinMode(CONTROL_PIN_1, INPUT_PULLUP);
   pinMode(CONTROL_PIN_2, INPUT_PULLUP);
+  pinMode(FLUSH_BUTTON_PIN, INPUT_PULLUP);  // ✅ Botón de flush manual
   
   // Configurar ADC para TDS
   analogReadResolution(12);
@@ -2010,12 +2040,15 @@ void setup() {
   delay(100);
   int pin16State = digitalRead(RELAY_PIN);
   int pin17State = digitalRead(RELAY_FLUSH_PIN);
+  int pin12State = digitalRead(FLUSH_BUTTON_PIN);
   logger("RELAY", "✓ Verificación Pin 16: %s (esperado: LOW=OFF)", pin16State == LOW ? "LOW" : "HIGH");
   logger("FLUSH", "✓ Verificación Pin 17: %s (esperado: LOW=OFF)", pin17State == LOW ? "LOW" : "HIGH");
+  logger("FLUSH", "✓ Botón Flush Manual (Pin 12): %s (LOW=activar flush)", pin12State == LOW ? "LOW (ACTIVO)" : "HIGH (inactivo)");
   
   // Inicializar lastFlushTime
   lastFlushTime = millis();
-  logger("FLUSH", "⏰ Flush configurado: cada %lu segundos", FLUSH_INTERVAL / 1000);
+  logger("FLUSH", "⏰ Flush programado: cada %lu segundos", FLUSH_INTERVAL / 1000);
+  logger("FLUSH", "✅ Botón de flush manual configurado en Pin 12 (LOW = activar)");
   
   // Verificar estado inicial del pin 25 (tanque)
   bool initialPin25State = digitalRead(CONTROL_PIN_2);
