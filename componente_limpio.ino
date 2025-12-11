@@ -141,6 +141,7 @@ String getControllerById();
 void enviarDatos(const char* productIdParam, float flujoProd, float flujoRech, float tds, float temperature);
 void executeFlush();
 void updateFlushRelay();
+void handleManualFlushButton();
 bool patchControllerResetPending();
 
 // ================== UTILITY FUNCTIONS ==================
@@ -292,30 +293,24 @@ void updateRelay() {
   bool state25 = digitalRead(CONTROL_PIN_2);  // Tanque
   bool previousRelayState = relayState;
   
-  // ✅ Verificar botón de flush manual (pin 12 en LOW = activo)
-  bool flushButtonActive = (digitalRead(FLUSH_BUTTON_PIN) == LOW);
-  
-  // Verificar si relay de flush está activo (programado O manual)
-  bool flushOverride = isFlushActive || flushButtonActive;
+  // Verificar si flush programado está activo
+  bool flushOverride = isFlushActive;
 
   // ✅ CONTROL DEL RELAY DE FLUSH (Pin 17)
-  // Activar relay de flush si hay flush programado O botón manual presionado
+  // Activar relay de flush solo si hay flush programado activo
+  // El botón manual se maneja en handleManualFlushButton()
   if (flushOverride) {
     if (!RELAY_FLUSH_STATE) {
       digitalWrite(RELAY_FLUSH_PIN, HIGH);  // ✅ HIGH = ON
       RELAY_FLUSH_STATE = true;
-      if (flushButtonActive) {
-        logWithTimestamp("RELAY", "🔄 FLUSH MANUAL: Relay Flush (Pin 17) ON - Botón presionado");
-      }
+      logWithTimestamp("RELAY", "🔄 FLUSH PROGRAMADO: Relay Flush (Pin 17) ON");
     }
   } else {
-    // Solo desactivar si NO hay flush programado activo (el botón manual tiene prioridad)
-    if (RELAY_FLUSH_STATE && !isFlushActive) {
+    // Desactivar si NO hay flush programado activo
+    if (RELAY_FLUSH_STATE) {
       digitalWrite(RELAY_FLUSH_PIN, LOW);   // ✅ LOW = OFF
       RELAY_FLUSH_STATE = false;
-      if (!flushButtonActive) {
-        logWithTimestamp("RELAY", "🔄 FLUSH MANUAL: Relay Flush (Pin 17) OFF - Botón liberado");
-      }
+      logWithTimestamp("RELAY", "🔄 FLUSH PROGRAMADO: Relay Flush (Pin 17) OFF");
     }
   }
 
@@ -330,11 +325,7 @@ void updateRelay() {
       digitalWrite(RELAY_PIN, HIGH);  // ✅ HIGH = ON
       
       if (flushOverride) {
-        if (flushButtonActive) {
-          logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - FORZADO por FLUSH MANUAL (Botón Pin 12)");
-        } else {
-          logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - FORZADO por FLUSH PROGRAMADO");
-        }
+        logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - FORZADO por FLUSH PROGRAMADO");
       } else {
         logWithTimestamp("RELAY", "🔄 CAMBIO: Relay ON - Ambas válvulas activas (27=%d, 25=%d)",
                          state27, state25);
@@ -479,6 +470,35 @@ void executeFlush() {
   logger("FLUSH", "═══════════════════════════════════════");
   
   lastFlushTime = millis();
+}
+
+void handleManualFlushButton() {
+  // No ejecutar si ya hay un flush en proceso
+  if (isFlushActive) {
+    return;
+  }
+  
+  // Detectar botón de flush manual (pin 12 en LOW = activo)
+  static bool lastButtonState = HIGH;
+  static unsigned long lastButtonPress = 0;
+  bool currentButtonState = digitalRead(FLUSH_BUTTON_PIN);
+  
+  // Detectar flanco de bajada (botón presionado)
+  // Con protección anti-rebote: solo ejecutar si pasaron al menos 2 segundos desde la última ejecución
+  if (lastButtonState == HIGH && currentButtonState == LOW) {
+    unsigned long now = millis();
+    if (now - lastButtonPress >= 2000) { // Mínimo 2 segundos entre ejecuciones
+      logger("FLUSH_MANUAL", "🔘 BOTÓN DE FLUSH MANUAL PRESIONADO - Iniciando flush de 30 segundos");
+      lastButtonPress = now;
+      delay(50); // Debounce
+      executeFlush();
+    } else {
+      logger("FLUSH_MANUAL", "⚠️ Botón presionado pero ignorado (muy reciente, esperar %lu ms más)", 
+             (2000 - (now - lastButtonPress)));
+    }
+  }
+  
+  lastButtonState = currentButtonState;
 }
 
 void updateFlushRelay() {
@@ -2047,8 +2067,7 @@ void setup() {
   
   // Inicializar lastFlushTime
   lastFlushTime = millis();
-  logger("FLUSH", "⏰ Flush programado: cada %lu segundos", FLUSH_INTERVAL / 1000);
-  logger("FLUSH", "✅ Botón de flush manual configurado en Pin 12 (LOW = activar)");
+  logger("FLUSH", "⏰ Flush configurado: cada %lu segundos", FLUSH_INTERVAL / 1000);
   
   // Verificar estado inicial del pin 25 (tanque)
   bool initialPin25State = digitalRead(CONTROL_PIN_2);
@@ -2090,7 +2109,10 @@ void setup() {
 void loop() {
   unsigned long now = millis();
   
-  // ====== ACTUALIZACIÓN DEL RELAY DE FLUSH (PRIORIDAD MÁXIMA) ======
+  // ====== DETECCIÓN DE BOTÓN DE FLUSH MANUAL (PRIORIDAD MÁXIMA) ======
+  handleManualFlushButton();
+  
+  // ====== ACTUALIZACIÓN DEL RELAY DE FLUSH PROGRAMADO ======
   updateFlushRelay();
   
   // ====== LECTURA CONTINUA DE SENSORES ======
