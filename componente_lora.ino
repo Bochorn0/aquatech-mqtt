@@ -25,9 +25,14 @@ const int udpPort = 12345;  // Puerto UDP para recibir datos
 const char* mqtt_server = "146.190.143.141";
 const int mqtt_port = 1883;
 const char* mqtt_client_id = "ESP32_LoRa_Receiver";
-const char* mqtt_topic_presion_in = "aquatech/presion_in";
-const char* mqtt_topic_presion_out = "aquatech/presion_out";
-const char* mqtt_topic_status = "aquatech/status";
+
+// Gateway ID único - CAMBIAR ESTE VALOR para cada gateway
+// Debe coincidir con el campo "id" del Controller en la base de datos
+const char* gateway_id = "gateway001";  // ⚠️ CAMBIAR según tu gateway
+
+// Topics MQTT con nuevo formato: aquatech/gateway/{gateway_id}/...
+String mqtt_topic_data = "aquatech/gateway/" + String(gateway_id) + "/data";
+String mqtt_topic_status = "aquatech/gateway/" + String(gateway_id) + "/status";
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -528,7 +533,7 @@ void reconnectMQTT() {
       
       // Publicar mensaje de estado
       String statusMsg = "{\"status\":\"online\",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
-      mqttClient.publish(mqtt_topic_status, statusMsg.c_str());
+      mqttClient.publish(mqtt_topic_status.c_str(), statusMsg.c_str());
       
       // Suscribirse a topics si es necesario (opcional)
       // mqttClient.subscribe("aquatech/commands");
@@ -546,29 +551,32 @@ void publishToMQTT() {
     return;
   }
   
-  // Publicar presión IN
-  String payload_in = String(presion_in, 1);
-  if (mqttClient.publish(mqtt_topic_presion_in, payload_in.c_str())) {
-    Serial.print("[MQTT] Publicado presion_in: ");
-    Serial.println(payload_in);
-  } else {
-    Serial.println("[MQTT] Error al publicar presion_in");
-  }
-  
-  // Publicar presión OUT
-  String payload_out = String(presion_out, 1);
-  if (mqttClient.publish(mqtt_topic_presion_out, payload_out.c_str())) {
-    Serial.print("[MQTT] Publicado presion_out: ");
-    Serial.println(payload_out);
-  } else {
-    Serial.println("[MQTT] Error al publicar presion_out");
-  }
-  
-  // Publicar mensaje combinado con timestamp (opcional)
+  // Crear mensaje JSON con nuevo formato
+  // Formato: { gateway_id, timestamp, sensors: { pressure_in, pressure_out, water_level }, source, rssi }
   unsigned long seconds = millis() / 1000;
-  String combinedMsg = "{\"presion_in\":" + String(presion_in, 1) + 
-                       ",\"presion_out\":" + String(presion_out, 1) + 
-                       ",\"timestamp\":" + String(seconds) + 
-                       ",\"source\":\"" + dataSource + "\"}";
-  mqttClient.publish("aquatech/data", combinedMsg.c_str());
+  
+  // Construir JSON manualmente
+  String jsonMsg = "{";
+  jsonMsg += "\"gateway_id\":\"" + String(gateway_id) + "\",";
+  jsonMsg += "\"timestamp\":" + String(seconds) + ",";
+  jsonMsg += "\"sensors\":{";
+  jsonMsg += "\"pressure_in\":" + String(presion_in, 1) + ",";
+  jsonMsg += "\"pressure_out\":" + String(presion_out, 1);
+  // Agregar water_level cuando esté disponible
+  // jsonMsg += ",\"water_level\":" + String(water_level, 1);
+  jsonMsg += "},";
+  jsonMsg += "\"source\":\"" + dataSource + "\"";
+  // Agregar RSSI si está disponible
+  // jsonMsg += ",\"rssi\":" + String(loraRssi);
+  jsonMsg += "}";
+  
+  // Publicar en topic: aquatech/gateway/{gateway_id}/data
+  if (mqttClient.publish(mqtt_topic_data.c_str(), jsonMsg.c_str())) {
+    Serial.print("[MQTT] ✅ Publicado en ");
+    Serial.print(mqtt_topic_data);
+    Serial.print(": ");
+    Serial.println(jsonMsg);
+  } else {
+    Serial.println("[MQTT] ❌ Error al publicar datos");
+  }
 }
