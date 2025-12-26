@@ -15,8 +15,8 @@
 #include <PubSubClient.h>
 
 // ================== WiFi Configuration ==================
-const char* ssid = "BochoLandStarlink2.4";
-const char* password = "Sakaunstarlink24*";
+const char* ssid = "Oneplus";
+const char* password = "";  // Sin contraseña
 
 // ================== UDP Configuration ==================
 WiFiUDP udp;
@@ -127,12 +127,16 @@ const unsigned long DISPLAY_UPDATE_INTERVAL = 500; // Actualizar cada 500ms
 unsigned long lastMqttReconnect = 0;
 const unsigned long MQTT_RECONNECT_INTERVAL = 5000; // Intentar reconectar cada 5 segundos
 
-// Datos recibidos vía LoRa o WiFi
+// Datos de presión (generados aleatoriamente para pruebas)
 float presion_in = 0.0;
 float presion_out = 0.0;
 unsigned long lastDataReceived = 0;
 int packetCount = 0;
-String dataSource = "None"; // "LoRa" o "WiFi"
+String dataSource = "Test"; // "Test" - datos generados automáticamente
+
+// Temporizador para generar y enviar datos de prueba
+unsigned long lastTestDataSent = 0;
+const unsigned long TEST_DATA_INTERVAL = 5000; // Enviar datos cada 5 segundos
 
 // ================== Setup ==================
 void setup() {
@@ -182,15 +186,9 @@ void setup() {
     displayInitialized = false;
   }
   
-  // Inicializar LoRa
-  Serial.println("\nInicializando LoRa...");
-  if (initLoRa()) {
-    loraInitialized = true;
-    Serial.println("✅ LoRa inicializado correctamente!");
-  } else {
-    loraInitialized = false;
-    Serial.println("⚠️  LoRa no inicializado (continuando sin LoRa)");
-  }
+  // Inicializar LoRa (desactivado para pruebas - solo datos random)
+  loraInitialized = false;
+  Serial.println("\n⚠️  LoRa desactivado - usando datos de prueba aleatorios");
   
   // Conectar a WiFi
   Serial.println("\nConectando a WiFi...");
@@ -235,14 +233,23 @@ void loop() {
     lastWiFiCheck = millis();
   }
   
-  // Escanear dispositivos LoRa si está inicializado
-  if (loraInitialized) {
-    scanLoRaDevices();
-  }
+  // Escanear dispositivos LoRa si está inicializado (desactivado para pruebas)
+  // if (loraInitialized) {
+  //   scanLoRaDevices();
+  // }
   
-  // Recibir datos WiFi UDP si está conectado
-  if (wifiConnected) {
-    receiveWiFiData();
+  // Recibir datos WiFi UDP si está conectado (desactivado para pruebas)
+  // if (wifiConnected) {
+  //   receiveWiFiData();
+  // }
+  
+  // Generar y enviar datos de presión aleatorios periódicamente
+  if (wifiConnected && mqttSecureConnected) {
+    if (millis() - lastTestDataSent >= TEST_DATA_INTERVAL) {
+      generateRandomPressureData();
+      publishToMQTT();
+      lastTestDataSent = millis();
+    }
   }
   
   // Manejar MQTT (solo puerto 8883 activo para publicación)
@@ -483,14 +490,39 @@ void connectToWiFi() {
     Serial.print(WiFi.RSSI());
     Serial.println(" dBm");
     
-    // Inicializar UDP para recibir datos
-    udp.begin(udpPort);
-    Serial.print("UDP iniciado en puerto ");
-    Serial.println(udpPort);
+    // Inicializar UDP para recibir datos (desactivado para pruebas)
+    // udp.begin(udpPort);
+    // Serial.print("UDP iniciado en puerto ");
+    // Serial.println(udpPort);
+    
+    Serial.println("✅ Sistema listo - generando datos de prueba aleatorios");
   } else {
     wifiConnected = false;
     Serial.println("❌ Error: No se pudo conectar a WiFi");
   }
+}
+
+// ================== Test Data Generation ==================
+void generateRandomPressureData() {
+  // Generar valores aleatorios de presión
+  // Presión IN: entre 30-100 PSI
+  presion_in = 30.0 + (random(0, 700) / 10.0); // 30.0 a 100.0 PSI
+  
+  // Presión OUT: entre 50-120 PSI (siempre mayor que IN)
+  presion_out = presion_in + 20.0 + (random(0, 500) / 10.0); // IN+20 a IN+70
+  if (presion_out > 120.0) presion_out = 120.0;
+  
+  packetCount++;
+  lastDataReceived = millis();
+  dataSource = "Test";
+  
+  Serial.print("[Test] Datos generados #");
+  Serial.print(packetCount);
+  Serial.print(" | Presion IN: ");
+  Serial.print(presion_in, 1);
+  Serial.print(" PSI | Presion OUT: ");
+  Serial.print(presion_out, 1);
+  Serial.println(" PSI");
 }
 
 // ================== LoRa Functions ==================
