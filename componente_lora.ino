@@ -4,6 +4,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <WiFiClientSecure.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -23,8 +24,45 @@ const int udpPort = 12345;  // Puerto UDP para recibir datos
 
 // ================== MQTT Configuration ==================
 const char* mqtt_server = "146.190.143.141";
-const int mqtt_port = 1883;
+const int mqtt_port_open = 1883;        // Puerto sin autenticación
+const int mqtt_port_secure = 8883;      // Puerto con autenticación y TLS
 const char* mqtt_client_id = "ESP32_LoRa_Receiver";
+
+// Credenciales MQTT para puerto seguro
+const char* mqtt_username = "Aquatech001";
+const char* mqtt_password = "Aquatech2025*";
+
+// ================== Certificado CA para TLS ==================
+// Certificado CA del servidor Mosquitto (Aquatech)
+const char* ca_cert = \
+"-----BEGIN CERTIFICATE-----\n" \
+"MIIECTCCAvGgAwIBAgIUaeT7mWBE0krpOQdDiG/akjnNe9MwDQYJKoZIhvcNAQEL\n" \
+"BQAwgZMxCzAJBgNVBAYTAk1YMQ8wDQYDVQQIDAZTb25vcmExEzARBgNVBAcMCkhl\n" \
+"cm1vc2lsbG8xETAPBgNVBAoMCEFxdWF0ZWNoMQswCQYDVQQLDAJUSTETMBEGA1UE\n" \
+"AwwKQXF1YXRlY2hUSTEpMCcGCSqGSIb3DQEJARYaYXF1YXRlY2guaXQuMjAyNUBn\n" \
+"bWFpbC5jb20wHhcNMjUxMjI2MTQwMzE4WhcNMzUxMjI0MTQwMzE4WjCBkzELMAkG\n" \
+"A1UEBhMCTVgxDzANBgNVBAgMBlNvbm9yYTETMBEGA1UEBwwKSGVybW9zaWxsbzER\n" \
+"MA8GA1UECgwIQXF1YXRlY2gxCzAJBgNVBAsMAlRJMRMwEQYDVQQDDApBcXVhdGVj\n" \
+"aFRJMSkwJwYJKoZIhvcNAQkBFhphcXVhdGVjaC5pdC4yMDI1QGdtYWlsLmNvbTCC\n" \
+"ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKY2bVSij845H6cMaX3CHHdu\n" \
+"zN/EAa5bYHCt8Y5ACphCzLmS5BwBCG0MTgKBLckYaH3qdzjEvMt+jeZ37N2f/Kmh\n" \
+"DDj1LXeSzXAG/tKeNt/dp2FgsF2mblCRaYZxwyBpZjaa/pv30kahNmeiU1euLoBi\n" \
+"BaKOKgyXbSvU7AJ3trT09ZDWUIzicoEw7zr4zPe4eL/0A7yE03JSNNrsb06QJjcz\n" \
+"JIJUeg15GlzIi2hWmYYg/rX11znYq94CUNEf6wbbwZmh7oaEYwO/ru9nq0JaCzDs\n" \
+"lqpKEkSo4VedfamD2zE7v8ncD+SSWzR/gSI+dJejAxsJ3HCVCeUzA1IOsVqkZG0C\n" \
+"AwEAAaNTMFEwHQYDVR0OBBYEFMJCox/DWSVVUDcl0+AOZyxGkMy8MB8GA1UdIwQY\n" \
+"MBaAFMJCox/DWSVVUDcl0+AOZyxGkMy8MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI\n" \
+"hvcNAQELBQADggEBAJ2q5IZdQSg1lLG2nKu9/HY2QUVf2lsi2lD+x9bA1DX6rw5+\n" \
+"s8Fz+ytZKrsDEciVcYgs9BhEVmP8AnZPcaE9pimJXqSBK8tehh/ZJtUZv2Vvp5g/\n" \
+"K6EvShFcvHqXsXQW8nhPvESRaE7bucSCONNS8Cuy/BDQ+ffE6USWzeVY4YwYcJ4g\n" \
+"C0l3buWSVNfbwL5HHTupUze06pn9zZgJbfcFk+WlwNwIizK3DPg39bom/0HT8+Fz\n" \
+"BYZgMEvHi/6B83pecj+MoAVPhpwl8549NE92Sszv8OIKpR59WOuC+a4NiVktCctS\n" \
+"U0YBXM/WsHxY/PyQl3qShJMZT3Q65aQAnC2Wocg=\n" \
+"-----END CERTIFICATE-----\n";
+
+// Opción: Si quieres desactivar la verificación del certificado (solo desarrollo)
+// Cambia USE_TLS_VERIFY a false
+const bool USE_TLS_VERIFY = true;  // true = verificar certificado, false = setInsecure()
 
 // Gateway ID único - CAMBIAR ESTE VALOR para cada gateway
 // Debe coincidir con el campo "id" del Controller en la base de datos
@@ -34,8 +72,14 @@ const char* gateway_id = "gateway001";  // ⚠️ CAMBIAR según tu gateway
 String mqtt_topic_data = "aquatech/gateway/" + String(gateway_id) + "/data";
 String mqtt_topic_status = "aquatech/gateway/" + String(gateway_id) + "/status";
 
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
+// Clientes MQTT (dos instancias: una para cada puerto)
+WiFiClient espClient;                        // Para puerto 1883 (sin auth)
+WiFiClientSecure espClientSecure;           // Para puerto 8883 (con auth y TLS)
+PubSubClient mqttClientOpen(espClient);     // Puerto 1883 (sin auth)
+PubSubClient mqttClientSecure(espClientSecure);  // Puerto 8883 (con auth y TLS)
+
+bool mqttOpenConnected = false;
+bool mqttSecureConnected = false;
 
 // ================== LoRa Configuration ==================
 #define LORA_SCK 5
@@ -77,7 +121,7 @@ bool displayInitialized = false;
 // Estado del sistema
 bool wifiConnected = false;
 bool loraInitialized = false;
-bool mqttConnected = false;
+bool mqttConnected = false;  // Mantener para compatibilidad con display
 unsigned long lastDisplayUpdate = 0;
 const unsigned long DISPLAY_UPDATE_INTERVAL = 500; // Actualizar cada 500ms
 unsigned long lastMqttReconnect = 0;
@@ -100,22 +144,41 @@ void setup() {
   Serial.println("==========================================\n");
   
   // Detectar y inicializar OLED
+  Serial.println("\n[Display] Intentando inicializar OLED...");
   if (initOLED()) {
     displayInitialized = true;
     Serial.println("✅ Display inicializado correctamente!");
+    Serial.print("  SDA: ");
+    Serial.println(OLED_SDA);
+    Serial.print("  SCL: ");
+    Serial.println(OLED_SCL);
+    Serial.print("  Dirección I2C: 0x");
+    Serial.println(OLED_ADDR, HEX);
     
     // Mostrar mensaje inicial
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
+    display.println("ESP32 LoRa");
+    display.println("SX1276 915MHz");
     display.println("Inicializando...");
     display.setCursor(0, 10);
     display.println("Display OK");
+    display.setCursor(0, 20);
+    display.print("SDA:");
+    display.print(OLED_SDA);
+    display.print(" SCL:");
+    display.print(OLED_SCL);
     display.display();
-    delay(1000);
+    delay(2000);
   } else {
     Serial.println("❌ Error: No se pudo inicializar el display");
+    Serial.println("⚠️  Continuando sin display...");
+    Serial.println("   Verifica:");
+    Serial.println("   - Conexiones SDA/SCL");
+    Serial.println("   - Alimentación del display");
+    Serial.println("   - Dirección I2C (0x3C o 0x3D)");
     displayInitialized = false;
   }
   
@@ -136,18 +199,27 @@ void setup() {
   // Inicializar MQTT
   if (wifiConnected) {
     Serial.println("\nInicializando MQTT...");
+    Serial.println("  Puerto 1883: Sin autenticación");
+    Serial.println("  Puerto 8883: Con autenticación (usuario: Aquatech001)");
     initMQTT();
   }
   
-  Serial.println("\nSistema listo.\n");
+  // Dibujar display completo inicial
+  if (displayInitialized) {
+    drawCompleteDisplay();
+  }
+  
+  Serial.println("\n✅ Sistema listo.\n");
+  if (!displayInitialized) {
+    Serial.println("⚠️  NOTA: Sistema funcionando sin display");
+    Serial.println("   El Serial Monitor mostrará toda la información");
+  }
 }
 
 // ================== Loop ==================
 void loop() {
-  if (!displayInitialized) {
-    delay(1000);
-    return;
-  }
+  // Continuar funcionando aunque el display no esté inicializado
+  // Solo actualizar display si está inicializado
   
   // Verificar estado WiFi periódicamente
   static unsigned long lastWiFiCheck = 0;
@@ -173,26 +245,58 @@ void loop() {
     receiveWiFiData();
   }
   
-  // Manejar MQTT
+  // Manejar MQTT (solo puerto 8883 activo para publicación)
   if (wifiConnected) {
-    if (!mqttClient.connected()) {
-      reconnectMQTT();
-    } else {
-      mqttClient.loop(); // Mantener conexión MQTT activa
-    }
+    reconnectMQTT();
+    // mqttClientOpen.loop();      // Puerto 1883 desactivado - no se publica
+    mqttClientSecure.loop();   // Mantener conexión MQTT 8883 activa
+    
+    // Actualizar estado mqttConnected para display (solo puerto 8883)
+    mqttConnected = mqttSecureConnected;  // Solo considerar puerto 8883
   }
   
-  // Actualizar display
-  if (millis() - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
+  // Actualizar display solo si está inicializado
+  if (displayInitialized && millis() - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
     updateDisplay();
     lastDisplayUpdate = millis();
+  }
+  
+  // Intentar reinicializar display si no está inicializado (cada 10 segundos)
+  static unsigned long lastDisplayRetry = 0;
+  if (!displayInitialized && millis() - lastDisplayRetry >= 10000) {
+    Serial.println("[Display] Reintentando inicializar display...");
+    if (initOLED()) {
+      displayInitialized = true;
+      Serial.println("✅ Display inicializado!");
+      drawCompleteDisplay();
+    }
+    lastDisplayRetry = millis();
   }
   
   delay(100);
 }
 
 // ================== Display Functions ==================
+void drawCompleteDisplay() {
+  if (!displayInitialized) return;
+  
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  
+  // Título
+  display.setCursor(0, 0);
+  display.println("ESP32 LoRa Gateway");
+  
+  // Línea separadora
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+  
+  updateDisplay();
+}
+
 void updateDisplay() {
+  if (!displayInitialized) return;
+  
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
@@ -295,14 +399,15 @@ bool initOLED() {
   
   for (int i = 0; i < numConfigs; i++) {
     for (int j = 0; j < numAddresses; j++) {
-      Serial.print("Probando SDA=");
+      Serial.print("[Display] Probando SDA=");
       Serial.print(configs[i].sda);
       Serial.print(", SCL=");
       Serial.print(configs[i].scl);
       Serial.print(", RST=");
       Serial.print(configs[i].rst);
       Serial.print(", Addr=0x");
-      Serial.println(addresses[j], HEX);
+      Serial.print(addresses[j], HEX);
+      Serial.print("... ");
       
       // Configurar Wire
       Wire.end();
@@ -326,7 +431,8 @@ bool initOLED() {
         OLED_RST = configs[i].rst;
         OLED_ADDR = addresses[j];
         
-        Serial.print("✅ Display encontrado! SDA=");
+        Serial.println("✅ OK!");
+        Serial.print("[Display] ✅ Display encontrado! SDA=");
         Serial.print(OLED_SDA);
         Serial.print(", SCL=");
         Serial.print(OLED_SCL);
@@ -334,10 +440,19 @@ bool initOLED() {
         Serial.println(OLED_ADDR, HEX);
         
         return true;
+      } else {
+        Serial.println("❌ Fallo");
       }
       delay(100);
     }
   }
+  
+  Serial.println("[Display] ❌ No se encontró ningún display compatible");
+  Serial.println("[Display] Configuraciones probadas:");
+  Serial.println("  - TTGO LoRa32: SDA=4, SCL=15, RST=16");
+  Serial.println("  - Estándar ESP32: SDA=21, SCL=22");
+  Serial.println("  - Con RST: SDA=21, SCL=22, RST=16");
+  Serial.println("[Display] Direcciones I2C probadas: 0x3C, 0x3D");
   
   return false;
 }
@@ -461,8 +576,9 @@ void parseLoRaData(String data) {
   Serial.print(" | Presion OUT: ");
   Serial.println(presion_out, 1);
   
-  // Publicar a MQTT si está conectado
-  if (mqttClient.connected()) {
+  // Publicar a MQTT solo si está conectado al puerto 8883
+  // Puerto 1883 desactivado - solo se publica en puerto 8883
+  if (mqttSecureConnected) {
     publishToMQTT();
   }
 }
@@ -498,8 +614,45 @@ void receiveWiFiData() {
 
 // ================== MQTT Functions ==================
 void initMQTT() {
-  mqttClient.setServer(mqtt_server, mqtt_port);
-  mqttClient.setCallback(mqttCallback);
+  // Configurar cliente para puerto 1883 (sin autenticación)
+  mqttClientOpen.setServer(mqtt_server, mqtt_port_open);
+  mqttClientOpen.setCallback(mqttCallback);
+  mqttClientOpen.setSocketTimeout(5);  // Timeout de 5 segundos
+  
+  // Configurar cliente para puerto 8883 (con autenticación y TLS)
+  espClientSecure.setTimeout(10); // Timeout de 10 segundos
+  
+  // Configurar certificado CA para TLS
+  if (USE_TLS_VERIFY) {
+    // Usar certificado CA para verificación
+    espClientSecure.setCACert(ca_cert);
+    Serial.println("[MQTT-8883] ✅ Certificado CA configurado (verificación TLS activa)");
+  } else {
+    // Desactivar verificación (solo para desarrollo)
+    espClientSecure.setInsecure();
+    Serial.println("[MQTT-8883] ⚠️  Verificación TLS desactivada (solo desarrollo)");
+  }
+  
+  mqttClientSecure.setServer(mqtt_server, mqtt_port_secure);
+  mqttClientSecure.setCallback(mqttCallback);
+  mqttClientSecure.setSocketTimeout(10);
+  
+  Serial.println("[MQTT] Configuración:");
+  Serial.print("  Puerto 1883: ");
+  Serial.print(mqtt_server);
+  Serial.print(":");
+  Serial.print(mqtt_port_open);
+  Serial.println(" (sin autenticación)");
+  Serial.print("  Puerto 8883: ");
+  Serial.print(mqtt_server);
+  Serial.print(":");
+  Serial.print(mqtt_port_secure);
+  Serial.println(" (con autenticación y TLS)");
+  Serial.print("  Usuario: ");
+  Serial.println(mqtt_username);
+  Serial.print("  TLS: ");
+  Serial.println(USE_TLS_VERIFY ? "Verificación activa" : "Verificación desactivada");
+  
   reconnectMQTT();
 }
 
@@ -521,36 +674,93 @@ void reconnectMQTT() {
   }
   lastMqttReconnect = millis();
   
-  if (!mqttClient.connected() && wifiConnected) {
-    Serial.print("Conectando a MQTT: ");
-    Serial.print(mqtt_server);
-    Serial.print(":");
-    Serial.println(mqtt_port);
+  if (!wifiConnected) {
+    return;
+  }
+  
+  // ====== CONECTAR AL PUERTO 1883 (SIN AUTENTICACIÓN) - DESACTIVADO ======
+  // Puerto 1883 desactivado - solo se usa puerto 8883
+  /*
+  if (!mqttClientOpen.connected()) {
+    Serial.print("[MQTT-1883] Conectando...");
     
-    if (mqttClient.connect(mqtt_client_id)) {
-      mqttConnected = true;
-      Serial.println("✅ MQTT conectado!");
+    if (mqttClientOpen.connect(mqtt_client_id)) {
+      mqttOpenConnected = true;
+      Serial.println(" ✅ Conectado!");
       
       // Publicar mensaje de estado
-      String statusMsg = "{\"status\":\"online\",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
-      mqttClient.publish(mqtt_topic_status.c_str(), statusMsg.c_str());
-      
-      // Suscribirse a topics si es necesario (opcional)
-      // mqttClient.subscribe("aquatech/commands");
+      String statusMsg = "{\"status\":\"online\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"port\":1883}";
+      mqttClientOpen.publish(mqtt_topic_status.c_str(), statusMsg.c_str());
     } else {
-      mqttConnected = false;
-      Serial.print("❌ Error MQTT, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" (reintentando en 5 segundos)");
+      mqttOpenConnected = false;
+      Serial.print(" ❌ Error, rc=");
+      Serial.println(mqttClientOpen.state());
+    }
+  }
+  */
+  
+  // ====== CONECTAR AL PUERTO 8883 (CON AUTENTICACIÓN Y TLS) ======
+  if (!mqttClientSecure.connected()) {
+    Serial.print("[MQTT-8883] Conectando con usuario: ");
+    Serial.print(mqtt_username);
+    Serial.print(" (TLS)...");
+    
+    // Conectar con autenticación y TLS
+    if (mqttClientSecure.connect(mqtt_client_id, mqtt_username, mqtt_password)) {
+      mqttSecureConnected = true;
+      Serial.println(" ✅ Conectado!");
+      
+      // Publicar mensaje de estado
+      String statusMsg = "{\"status\":\"online\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"port\":8883}";
+      mqttClientSecure.publish(mqtt_topic_status.c_str(), statusMsg.c_str());
+    } else {
+      mqttSecureConnected = false;
+      Serial.print(" ❌ Error, rc=");
+      int state = mqttClientSecure.state();
+      Serial.print(state);
+      
+      // Mensajes de error más descriptivos
+      switch (state) {
+        case -4:
+          Serial.println(" - Timeout (verificar que el puerto 8883 está abierto)");
+          break;
+        case -3:
+          Serial.println(" - Conexión perdida");
+          break;
+        case -2:
+          Serial.println(" - Fallo de conexión TLS");
+          Serial.println("   Verificar:");
+          Serial.println("   - Puerto 8883 está abierto en el servidor");
+          Serial.println("   - TLS está configurado correctamente en Mosquitto");
+          Serial.println("   - Certificado CA es correcto y está en el código");
+          Serial.println("   - Firewall permite conexiones al puerto 8883");
+          Serial.println("   - Credenciales correctas (usuario: Aquatech001)");
+          if (!USE_TLS_VERIFY) {
+            Serial.println("   ⚠️  Verificación TLS desactivada - considerar activarla");
+          }
+          Serial.println("   - Probar desde servidor:");
+          Serial.println("     mosquitto_sub -h 146.190.143.141 -p 8883 --cafile /etc/mosquitto/certs/ca.crt -u Aquatech001 -P 'Aquatech2025*' -t 'test'");
+          break;
+        case -1:
+          Serial.println(" - Desconectado");
+          break;
+        case 4:
+          Serial.println(" - Credenciales incorrectas");
+          break;
+        case 5:
+          Serial.println(" - No autorizado (verificar ACL)");
+          break;
+        default:
+          Serial.print(" - Error desconocido (código: ");
+          Serial.print(state);
+          Serial.println(")");
+          break;
+      }
     }
   }
 }
 
 void publishToMQTT() {
-  if (!mqttClient.connected()) {
-    return;
-  }
-  
   // Crear mensaje JSON con nuevo formato
   // Formato: { gateway_id, timestamp, sensors: { pressure_in, pressure_out, water_level }, source, rssi }
   unsigned long seconds = millis() / 1000;
@@ -570,13 +780,28 @@ void publishToMQTT() {
   // jsonMsg += ",\"rssi\":" + String(loraRssi);
   jsonMsg += "}";
   
-  // Publicar en topic: aquatech/gateway/{gateway_id}/data
-  if (mqttClient.publish(mqtt_topic_data.c_str(), jsonMsg.c_str())) {
-    Serial.print("[MQTT] ✅ Publicado en ");
-    Serial.print(mqtt_topic_data);
-    Serial.print(": ");
-    Serial.println(jsonMsg);
-  } else {
-    Serial.println("[MQTT] ❌ Error al publicar datos");
+  // Publicar en puerto 1883 (sin autenticación) - DESACTIVADO
+  // Solo se publica en puerto 8883 (con autenticación y TLS)
+  /*
+  if (mqttOpenConnected && mqttClientOpen.connected()) {
+    if (mqttClientOpen.publish(mqtt_topic_data.c_str(), jsonMsg.c_str())) {
+      // Serial.print("[MQTT-1883] ✅ Publicado: ");
+      // Serial.println(jsonMsg);
+    } else {
+      Serial.println("[MQTT-1883] ❌ Error al publicar");
+      mqttOpenConnected = false;
+    }
+  }
+  */
+  
+  // Publicar en puerto 8883 (con autenticación y TLS) - ACTIVO
+  if (mqttSecureConnected && mqttClientSecure.connected()) {
+    if (mqttClientSecure.publish(mqtt_topic_data.c_str(), jsonMsg.c_str())) {
+      // Serial.print("[MQTT-8883] ✅ Publicado: ");
+      // Serial.println(jsonMsg);
+    } else {
+      Serial.println("[MQTT-8883] ❌ Error al publicar");
+      mqttSecureConnected = false;
+    }
   }
 }
