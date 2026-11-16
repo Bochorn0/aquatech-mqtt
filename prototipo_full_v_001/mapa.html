@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prototipo full v001 — mapa y reglas</title>
+<style>
+  :root {
+    --ink: #173042;
+    --muted: #5d7384;
+    --line: #c5d3de;
+    --bg: #f4f7f8;
+    --card: #fff;
+    --out: #0e6b4f;
+    --in: #0b5f8a;
+    --ana: #8a4b12;
+    --off: #8b3a3a;
+    --tft: #5c4d86;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  h2 { font-size: 18px; margin: 28px 0 10px; }
+  p { margin: 0 0 10px; }
+  .lead { color: var(--muted); max-width: 720px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  .tag { border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 650; }
+  .tag.out { background: #e5f6ef; color: var(--out); }
+  .tag.in { background: #e5f2fa; color: var(--in); }
+  .tag.ana { background: #fbeede; color: var(--ana); }
+  .tag.off { background: #f8e8e8; color: var(--off); }
+  .tag.tft { background: #eeeaf8; color: var(--tft); }
+  .board {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    overflow-x: auto;
+  }
+  svg { width: 100%; height: auto; min-width: 760px; display: block; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .note {
+    background: #fff8e8;
+    border: 1px solid #ead7a4;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 12px;
+  }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card h3 { margin: 0 0 8px; font-size: 16px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Prototipo full v001</h1>
+  <p class="lead">Mapa de esta carpeta. El sketch es <code>prototipo_full_v_001.ino</code>. No usa WiFi, API ni MQTT. ON del relevador es HIGH. Las entradas se activan al cerrarlas a GND.</p>
+  <div class="legend">
+    <span class="tag out">Salida de relevador</span>
+    <span class="tag in">Entrada digital a GND</span>
+    <span class="tag ana">Presión 4-20 mA</span>
+    <span class="tag off">Forzado apagado</span>
+    <span class="tag tft">Pantalla, no usar</span>
+  </div>
+
+  <h2>Mapa de la placa</h2>
+  <div class="board">
+    <svg viewBox="0 0 980 560" role="img" aria-label="Mapa de conexiones del prototipo">
+      <rect x="330" y="70" width="320" height="420" rx="16" fill="#12324a"/>
+      <text x="490" y="100" text-anchor="middle" fill="#fff" font-size="16" font-weight="700">ESP32-WROOM-32</text>
+      <text x="490" y="120" text-anchor="middle" fill="#9ec3d6" font-size="12">prototipo_full_v_001</text>
+
+      <g font-size="13" font-family="ui-monospace, Menlo, monospace">
+        <text x="348" y="160" fill="#9ddec0">32 cruda</text>
+        <text x="348" y="188" fill="#9ddec0">33 valvula</text>
+        <text x="348" y="216" fill="#9ddec0">25 flush</text>
+        <text x="348" y="244" fill="#9ddec0">26 cloro</text>
+        <text x="348" y="272" fill="#9ddec0">27 presion</text>
+        <text x="348" y="300" fill="#9ddec0">14 pura</text>
+        <text x="348" y="336" fill="#f3c48a">12 sensor S4</text>
+        <text x="348" y="372" fill="#f3c48a">13 sensor S3</text>
+        <text x="348" y="408" fill="#f3c48a">34 sensor S1</text>
+        <text x="348" y="444" fill="#f3c48a">35 sensor S2</text>
+        <text x="348" y="472" fill="#c8bddf">GND</text>
+
+        <text x="520" y="160" fill="#9ecff0">16 cruda</text>
+        <text x="520" y="188" fill="#9ecff0">17 valvula</text>
+        <text x="520" y="216" fill="#9ecff0">22 presion</text>
+        <text x="520" y="244" fill="#9ecff0">4 flujo 1</text>
+        <text x="520" y="280" fill="#c8bddf">2 DC</text>
+        <text x="520" y="308" fill="#c8bddf">5 CS</text>
+        <text x="520" y="336" fill="#c8bddf">18 SCK</text>
+        <text x="520" y="364" fill="#c8bddf">21 RST</text>
+        <text x="520" y="392" fill="#c8bddf">23 MOSI</text>
+        <text x="520" y="420" fill="#9ecff0">19 flujo 2</text>
+      </g>
+
+      <g font-size="13">
+        <line x1="330" y1="154" x2="250" y2="154" stroke="#0e6b4f" stroke-width="2"/>
+        <line x1="330" y1="182" x2="250" y2="182" stroke="#0e6b4f" stroke-width="2"/>
+        <line x1="330" y1="210" x2="250" y2="210" stroke="#0e6b4f" stroke-width="2"/>
+        <line x1="330" y1="238" x2="250" y2="238" stroke="#0e6b4f" stroke-width="2"/>
+        <line x1="330" y1="266" x2="250" y2="266" stroke="#0e6b4f" stroke-width="2"/>
+        <line x1="330" y1="294" x2="250" y2="294" stroke="#0e6b4f" stroke-width="2"/>
+        <rect x="40" y="130" width="210" height="190" rx="10" fill="#e5f6ef" stroke="#0e6b4f"/>
+        <text x="145" y="154" text-anchor="middle" font-weight="700">Relevadores ON = HIGH</text>
+        <text x="52" y="178">32 bomba agua cruda</text>
+        <text x="52" y="198">33 valvula, regla apagada</text>
+        <text x="52" y="218">25 flush</text>
+        <text x="52" y="238">26 bomba de cloro</text>
+        <text x="52" y="258">27 salida de presion</text>
+        <text x="52" y="278">14 bomba purificada</text>
+        <text x="52" y="302" fill="#8a4b12">12 y 13 tambien leen presion</text>
+
+        <line x1="650" y1="154" x2="730" y2="154" stroke="#0b5f8a" stroke-width="2"/>
+        <line x1="650" y1="182" x2="730" y2="182" stroke="#0b5f8a" stroke-width="2"/>
+        <line x1="650" y1="210" x2="730" y2="210" stroke="#0b5f8a" stroke-width="2"/>
+        <line x1="650" y1="238" x2="730" y2="238" stroke="#0b5f8a" stroke-width="2"/>
+        <rect x="730" y="120" width="220" height="160" rx="10" fill="#e5f2fa" stroke="#0b5f8a"/>
+        <text x="840" y="144" text-anchor="middle" font-weight="700">Entradas a GND</text>
+        <text x="742" y="170">16 interruptor cruda</text>
+        <text x="742" y="190">17 interruptor valvula</text>
+        <text x="742" y="210">22 interruptor presion</text>
+        <text x="742" y="230">4 pulso medidor 1</text>
+        <text x="742" y="250">19 pulso medidor 2</text>
+        <text x="742" y="272" fill="#5d7384">Pull-up interno. Cerrado = LOW</text>
+
+        <line x1="330" y1="366" x2="210" y2="430" stroke="#8a4b12" stroke-width="2"/>
+        <line x1="330" y1="402" x2="210" y2="470" stroke="#8a4b12" stroke-width="2"/>
+        <rect x="40" y="400" width="210" height="120" rx="10" fill="#fbeede" stroke="#8a4b12"/>
+        <text x="145" y="422" text-anchor="middle" font-weight="700">Sensores 4-20 mA</text>
+        <text x="52" y="442">S1 34   S2 35</text>
+        <text x="52" y="462">S3 13   S4 12</text>
+        <text x="52" y="490" fill="#5d7384">150 ohm cada uno, a GND</text>
+      </g>
+    </svg>
+  </div>
+  <div class="note">
+    El GPIO 12 y el GPIO 13 comparten pista con relevadores de la placa. La lectura los suelta un instante y el sketch los regresa a bajo para que no se queden ciclando.
+  </div>
+
+  <h2>Lazo de cada sensor de presión</h2>
+  <div class="card">
+    <svg viewBox="0 0 920 150" role="img" aria-label="Lazo de 4 a 20 miliamperios con resistencia de 150 ohm">
+      <rect x="20" y="36" width="120" height="48" rx="8" fill="#fbeede" stroke="#8a4b12"/>
+      <text x="80" y="64" text-anchor="middle">Fuente</text>
+      <text x="170" y="30" text-anchor="middle" font-size="12">positivo</text>
+      <line x1="140" y1="48" x2="230" y2="48" stroke="#173042" stroke-width="2"/>
+      <polygon points="230,48 220,43 220,53" fill="#173042"/>
+      <rect x="230" y="28" width="140" height="44" rx="8" fill="#fff" stroke="#173042"/>
+      <text x="300" y="54" text-anchor="middle">Sensor + / −</text>
+      <line x1="370" y1="48" x2="470" y2="48" stroke="#173042" stroke-width="2"/>
+      <polygon points="470,48 460,43 460,53" fill="#173042"/>
+      <rect x="470" y="28" width="150" height="44" rx="8" fill="#e5f2fa" stroke="#0b5f8a"/>
+      <text x="545" y="54" text-anchor="middle">GPIO 34 o 13</text>
+      <line x1="545" y1="72" x2="545" y2="110" stroke="#173042" stroke-width="2"/>
+      <rect x="470" y="110" width="150" height="28" rx="6" fill="#fff" stroke="#8a4b12"/>
+      <text x="545" y="129" text-anchor="middle">150 ohm</text>
+      <line x1="470" y1="124" x2="80" y2="124" stroke="#173042" stroke-width="2"/>
+      <line x1="80" y1="84" x2="80" y2="124" stroke="#173042" stroke-width="2"/>
+      <text x="250" y="140" font-size="12" fill="#5d7384">El otro extremo de la resistencia, el negativo de la fuente y GND del ESP32 van juntos.</text>
+    </svg>
+    <p>Cada sensor lleva su propia resistencia. 4 mA es 0 psi. Los fondos de esta prueba son 0.812 MPa en el 34, 1.983 MPa en el 35, 0.915 MPa en el 13 y 2.327 MPa en el 12. La bomba purificada compara el 34 con el 13. El positivo de la fuente no toca el GPIO.</p>
+  </div>
+
+  <h2>Reglas de esta prueba</h2>
+  <table>
+    <thead>
+      <tr><th>Equipo</th><th>Estado</th><th>Condición</th><th>Salida</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Agua cruda</td><td>Activa</td><td>GPIO 16 cerrado a GND</td><td>GPIO 32</td></tr>
+      <tr><td>Válvula</td><td>Cargada, apagada</td><td>GPIO 16 y GPIO 17 a GND al mismo tiempo. No actúa.</td><td>GPIO 33</td></tr>
+      <tr><td>Flush</td><td>Activa</td><td>30 s encendido. El siguiente inicio es 60 s después del anterior. El primero espera 60 s desde el arranque.</td><td>GPIO 25</td></tr>
+      <tr><td>Cloro</td><td>Activa</td><td>Pulsos del medidor 1, GPIO 4, 0.1 L por pulso. Si en 5 s hay flujo, enciende. En pantalla el pin se ve como (4). Un medidor de plataforma se vería API- y cinco letras de su nombre.</td><td>GPIO 26</td></tr>
+      <tr><td>Presión</td><td>Activa</td><td>GPIO 22 cerrado a GND</td><td>GPIO 27</td></tr>
+      <tr><td>Purificada</td><td>Activa</td><td>Diferencia absoluta entre GPIO 34 y GPIO 13 de 10 psi o más. Se apaga debajo de 8.5 psi. Si un lazo no es válido, queda apagada.</td><td>GPIO 14</td></tr>
+    </tbody>
+  </table>
+  <p>La diferencia es absoluta: da igual cuál de los dos sensores esté más alto. La histéresis es 1.5 psi. Las salidas que no son la cruda ni el flush esperan 0.8 s antes de cambiar, para no oscilar.</p>
+
+  <h2>Red</h2>
+  <div class="card">
+    <p>La operación no espera a Internet. Sin red sigue la configuración local, o la última copia que sí llegó.</p>
+    <p>Bluetooth solo para dar de alta. Nombre <b>AquaTech_Proto</b>. Una línea por comando: <b>NombreRed,clave</b>, <b>ID device_id</b>, <b>PROVISION</b> (abre 3 minutos) o <b>CLEAR_WIFI</b>. Con WiFi guardado, Bluetooth se apaga.</p>
+    <p>El ID y la clave de la API se quedan en el equipo. El latido avisa presencia y trae solo el sello de las reglas. El documento completo se baja cuando ese sello cambia. Hay que poner el device_id del portal en <b>NET_DEVICE_ID</b> y la clave en <b>NET_LOGIN_PASSWORD</b>.</p>
+    <p>Con WiFi, el GPIO 12 y el GPIO 13 pueden leer mal porque son ADC2.</p>
+  </div>
+
+  <h2>Pines que no se tocan</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Pantalla</h3>
+      <p>GPIO 2 DC, GPIO 5 CS, GPIO 18 reloj, GPIO 21 reset, GPIO 23 MOSI.</p>
+    </div>
+    <div class="card">
+      <h3>Arranque y reserva</h3>
+      <p>GPIO 15 es de arranque. GPIO 0 no se usa. GPIO 12 y GPIO 35 ya leen presión.</p>
+    </div>
+  </div>
+</main>
+</body>
+</html>
